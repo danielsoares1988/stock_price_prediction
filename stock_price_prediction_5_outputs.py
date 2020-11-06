@@ -22,8 +22,10 @@ from pandas_datareader import data as pdr
 # Downloading the train set
 yf.pdr_override()
 
-dataset_train = pdr.get_data_yahoo("PETR4.SA", start="2015-01-01", end="2020-08-01")
+dataset_train = pdr.get_data_yahoo("Vale", start="2010-01-01", end="2019-09-01")
 training_set = dataset_train.iloc[:,3:4].values
+
+
 
 # Parameters
 days_ahead =  5
@@ -36,19 +38,40 @@ training_set_scaled = sc.fit_transform(training_set)
 #testing_set_scaled = sc.fit_transform(testing_set)
 
 
-#creating a train data structure with defined timesteps and 1 output 
+#creating a train data structure with defined timesteps and 5 output 
 x_train = []
 y_train = []
-for i in range(timesteps, len(dataset_train)):
+for i in range(timesteps, len(dataset_train)-days_ahead):
     x_train.append(training_set_scaled[i-timesteps:i,0])
-    y_train.append(training_set_scaled[i,0])
     
-x_train, y_train = np.array(x_train), np.array(y_train)
+    y_train.append(training_set_scaled[i:i+days_ahead,0])
+    
+
+
+y_train = np.array(y_train)
+x_train = np.array(x_train) 
 
 #Reshaping to Keras
 x_train = np.reshape(x_train, (x_train.shape[0], x_train.shape[1], 1))
+y_train = np.reshape(y_train, (y_train.shape[0], y_train.shape[1], 1))
 
 
+
+
+
+
+##### Valiation data #######
+
+dataset_validate = pdr.get_data_yahoo("Vale", start="2019-09-01", end="2020-11-01")
+validate_set = dataset_validate.iloc[:,3:4].values
+validate_set_scaled = sc.fit_transform(validate_set)
+
+x_validate =  validate_set_scaled[:timesteps,0].reshape(-1,1)
+y_validate = validate_set_scaled[timesteps:timesteps+days_ahead,0].reshape(-1,1)
+
+
+x_validate = np.reshape(x_validate, (x_validate.shape[1], x_validate.shape[0], 1))
+y_validate = np.reshape(y_validate, (y_validate.shape[1], y_validate.shape[0], 1))
 
 
 ############################
@@ -68,30 +91,30 @@ from keras.layers import Dropout
 regressor = Sequential()
 
 # Adding the first LSTM layer and some Dropout regularization
-regressor.add(LSTM(units = 50, return_sequences = True, input_shape = (x_train.shape[1], 1)))
+regressor.add(LSTM(units = 128, return_sequences = True, input_shape = (x_train.shape[1], 1)))
 regressor.add(Dropout(0.2))
 
 # Adding the second LSTM layer and some Dropout regularization
-regressor.add(LSTM(units = 50, return_sequences = True))
+regressor.add(LSTM(units = 128, return_sequences = True))
 regressor.add(Dropout(0.2))
 
 # Adding the third LSTM layer and some Dropout regularization
-regressor.add(LSTM(units = 50, return_sequences = True))
+regressor.add(LSTM(units = 128, return_sequences = True))
 regressor.add(Dropout(0.2))
 
 # Adding the fourth LSTM layer and some Dropout regularization
-regressor.add(LSTM(units = 50))
+regressor.add(LSTM(units = 128))
 regressor.add(Dropout(0.2))
 
 # Adding  the output layer
-regressor.add(Dense(units = 5))
+regressor.add(Dense(units = days_ahead))
 
 
 # Compilling the RNN to the Training set
 regressor.compile(optimizer = 'adam', loss = 'mean_squared_error')
 
 # Fitting the RNN to the Training set
-regressor.fit(x_train, y_train, epochs = 30, batch_size = 32)
+regressor.fit(x_train, y_train, epochs = 50, batch_size = 128, shuffle = True, validation_data=(x_validate, y_validate))
 
 
 
@@ -100,7 +123,7 @@ regressor.fit(x_train, y_train, epochs = 30, batch_size = 32)
 #############################################################
 
 # Download the test set
-dataset_test = pdr.get_data_yahoo("PETR4.SA", start="2020-08-02", end="2020-10-28")
+dataset_test = pdr.get_data_yahoo("Vale", start="2019-09-01", end="2020-11-01")
 testing_set = dataset_test.iloc[:,3:4].values
 
 # Creating a test data structure with defined timesteps
@@ -113,58 +136,49 @@ testing_set_with_timesteps_scaled = sc.fit_transform(testing_set_with_timesteps)
 # start to prediction
 X_test = []
 y_test = []
+prediction_seq = []
 
 # point in the y_test the prediction will starts
 pointer = timesteps   
 
-# Predict while to exist values to predict into y_test
-while pointer + days_ahead <= len(testing_set_with_timesteps_scaled):
+
+
+for i in range(pointer, len(testing_set_with_timesteps_scaled), days_ahead):
+    print(i)
+        
+    X_test = testing_set_with_timesteps_scaled[i-timesteps:i]
+    X_test = np.reshape(X_test, (1, X_test.shape[0], 1))
     
-    # x_test used to predict the next days_ahead
-    X_test = testing_set_with_timesteps_scaled[:pointer]
-
-    # Predict prices for the next days_ahead
-    for i in range(pointer, pointer+days_ahead):
-        print(i)
-        
-        # X-test window specificly to this iteration
-        X_test_temp = X_test[i-pointer:i, 0]
-        X_test_temp = np.array(X_test_temp)
-        
-        # Reshaping to Keras
-        X_test_temp = np.reshape(X_test_temp, (1, X_test_temp.shape[0], 1))
-        
-        # Predict price
-        prediction = regressor.predict(X_test_temp)
-        print(prediction)
-        
-        # Update y_test and also x_test for the next prediction
-        y_test.extend(prediction[0])
-        X_test = np.append(X_test, prediction, axis=0)
-
-
+    prediction = regressor.predict(X_test)
+    print(prediction)
+    
+    prediction_seq.append(prediction[0])
+    
     # Transform y_test to print
-    y_test_transformed = sc.inverse_transform(np.array(y_test).reshape(-1,1))
-    x_index_seq = list(range(pointer, pointer+days_ahead))
-    plt.plot(x_index_seq, y_test_transformed[len(y_test_transformed)-days_ahead:], color = 'blue' )
+    prediction_transformed = sc.inverse_transform(np.array(prediction).reshape(-1,1))
+    x_index_seq = np.array(list(range(i, i+days_ahead))).reshape(-1,1)
+    plt.plot(x_index_seq, prediction_transformed, color = 'blue')
     
-    # Update the pointer for the next sequence of predictions
-    pointer += days_ahead
-
-y_test = sc.inverse_transform(np.array(y_test).reshape(-1,1))
-inputsUpdatedTransformed = sc.inverse_transform(np.array(X_test).reshape(-1,1))
 
 
-dataset_total_print = np.array(total_set[len(total_set) - (pointer):])
-#predicted_print = np.append(dataset_total_print[:len(dataset_total_print) - len(dataset_test)], y_test)
+#Y_test = testing_set_with_timesteps_scaled[testing_set_with_timesteps_scaled.shape[0] - days_ahead :]
+Y_test = testing_set_with_timesteps_scaled
+Y_test_transformed = sc.inverse_transform(np.array(Y_test).reshape(-1,1))
+
+
+#prediction_transformed = sc.inverse_transform(np.array(prediction).reshape(-1,1))
 
 
 # Visualising
-plt.plot(dataset_total_print, color = 'red', label = 'Real Petrobras Stock Price')
-#plt.plot(predicted_print, color = 'blue', label = 'Predicted Petrobras Stock Price')
+plt.plot(Y_test_transformed, color = 'red', label = 'Real Petrobras Stock Price')
+#plt.plot(prediction_transformed, color = 'blue', label = 'Predicted Petrobras Stock Price')
 plt.title('Petrobras Stock Price Prediction')
 plt.xlabel('Time')
 plt.ylabel('Petrobras Stock Price')
 #plt.xlim(0, pointer)
 plt.legend()
 plt.show()
+
+
+
+
